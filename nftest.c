@@ -92,6 +92,70 @@ struct Packet
 
 std::list<Packet> packets;
 
+int PrintPkt( unsigned int id, struct iphdr* iphdr, struct tcphdr* tcphdr )
+{
+    char buf[80];
+    // 1   0.000000    10.3.1.49 -> 137.189.88.150 TCP 74 10000→11000 [SYN] Seq=0 Win=29200 Len=0 MSS=1460 SACK_PERM=1 TSval=890354428 TSecr=0 WS=128
+    printf( "%u ", id );
+    printf( "%s:%d -> ", ip_ip2str( iphdr->saddr, buf, sizeof( buf ) ), ntohs( tcphdr->source ) );
+    printf( "%s:%d ",    ip_ip2str( iphdr->daddr, buf, sizeof( buf ) ), ntohs( tcphdr->dest ) );
+    printf( "[" );
+    unsigned count = 0;
+    if ( 1 == tcphdr->urg )
+    {
+        printf( "URG" );
+        ++count;
+    }
+    if ( 1 == tcphdr->ack )
+    {
+        if ( count > 0 )
+        {
+            printf( ", " );
+        }
+        printf( "ACK" );
+        ++count;
+    }
+    if ( 1 == tcphdr->psh )
+    {
+        if ( count > 0 )
+        {
+            printf( ", " );
+        }
+        printf( "PSH" );
+        ++count;
+    }
+    if ( 1 == tcphdr->rst )
+    {
+        if ( count > 0 )
+        {
+            printf( ", " );
+        }
+        printf( "RST" );
+        ++count;
+    }
+    if ( 1 == tcphdr->syn )
+    {
+        if ( count > 0 )
+        {
+            printf( ", " );
+        }
+        printf( "SYN" );
+        ++count;
+    }
+    if ( 1 == tcphdr->fin )
+    {
+        if ( count > 0 )
+        {
+            printf( ", " );
+        }
+        printf( "FIN" );
+        ++count;
+    }
+    printf( "]" );
+    printf( "\n" );
+    return 0;
+}
+
 /*
  * Callback function installed to netfilter queue
  */
@@ -103,46 +167,46 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
     unsigned int id = 0;
     nfqnl_msg_packet_hdr* header;
 
-    printf( "pkt recvd: " );
+    io_debug( "pkt recvd: " );
     if ( ( header = nfq_get_msg_packet_hdr( pkt ) ) )
     {
         id = ntohl( header->packet_id );
-        printf( "  id: %u\n", id );
-        printf( "  hw_protocol: %u\n", ntohs( header->hw_protocol ) );
-        printf( "  hook: %u\n", header->hook );
+        io_debug( "  id: %u\n", id );
+        io_debug( "  hw_protocol: %u\n", ntohs( header->hw_protocol ) );
+        io_debug( "  hook: %u\n", header->hook );
     }
 
     // print the timestamp (PC: seems the timestamp is not always set)
     struct timeval tv;
     if ( !nfq_get_timestamp( pkt, &tv ) )
     {
-        printf( "  timestamp: %lu.%lu\n", tv.tv_sec, tv.tv_usec );
+        io_debug( "  timestamp: %lu.%lu\n", tv.tv_sec, tv.tv_usec );
     }
     else
     {
-        printf( "  timestamp: nil\n" );
+        io_debug( "  timestamp: nil\n" );
     }
 
     // Print the payload; in copy meta mode, only headers will be
     // included; in copy packet mode, whole packet will be returned.
-    printf( " payload: " );
+    io_debug( " payload: " );
     unsigned char* pktData;
     int len = nfq_get_payload( pkt, ( unsigned char** )&pktData );
     if ( len > 0 )
     {
         for ( int i = 0; i < len; ++i )
         {
-            printf( "%02x ", pktData[i] );
+            io_debug( "%02x ", pktData[i] );
         }
     }
-    printf( "\n" );
+    io_debug( "\n" );
 
     struct iphdr* iph = ( struct iphdr* ) pktData;
-    printf( "source      ip : %s\n", ip_ip2str( iph->saddr, buf, sizeof( buf ) ) );
-    printf( "destination ip : %s\n", ip_ip2str( iph->daddr, buf, sizeof( buf ) ) );
+    io_debug( "source      ip : %s\n", ip_ip2str( iph->saddr, buf, sizeof( buf ) ) );
+    io_debug( "destination ip : %s\n", ip_ip2str( iph->daddr, buf, sizeof( buf ) ) );
 
     // add a newline at the end
-    printf( "\n" );
+    io_debug( "\n" );
 
     if ( iph->protocol != IPPROTO_TCP )
     {
@@ -153,9 +217,11 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
 
     struct tcphdr* tcph = ( struct tcphdr* )( ( ( char* ) iph ) + ( iph->ihl << 2 ) );
 
-    PrintIpHeader( iph, NULL, 0, stdout );
-    PrintTcp( tcph, stdout );
-    fprintf( stdout, "----------------------------------------\n" );
+    PrintPkt( id, iph, tcph );
+
+//    PrintIpHeader( iph, NULL, 0, stdout );
+//    PrintTcp( tcph, stdout );
+//    fprintf( stdout, "----------------------------------------\n" );
 
     u_int16_t port = 0;
 
@@ -183,10 +249,11 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
         if ( ip_port_map.end() == ite && 1 == tcph->syn )
         {
             // (b)
-            printf( "outbound (b)\n" );
+            io_debug( "outbound (b)\n" );
             if ( available_ports.empty() )
             {
-                printf( "No available ports. Failed to create new nat entry\n" );
+                printf( "error: No available ports. Failed to create new nat entry\n" );
+                exit( 1 );
             }
             else
             {
@@ -202,18 +269,18 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
         else if ( ip_port_map.end() == ite && 0 == tcph->syn )
         {
             // (c)
-            printf( "outbound (c)\n" );
+            io_debug( "outbound (c)\n" );
         }
         else if ( ip_port_map.end() != ite && 0 == tcph->syn )
         {
             // (d)
-            printf( "outbound (d)\n" );
+            io_debug( "outbound (d)\n" );
             port = ite->second;
         }
         else if ( ip_port_map.end() != ite && 1 == tcph->syn )
         {
             // ???
-            printf( "outbound ???\n" );
+            io_debug( "outbound ???\n" );
         }
 
         // need to handle RST/FIN to get port back
@@ -221,15 +288,15 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
         if ( 0 == port )
         {
             // drop
-            printf( "drop\n" );
+            io_debug( "drop\n" );
             return nfq_set_verdict( myQueue, id, NF_DROP, len, pktData );
         }
         else
         {
-            printf( "Original source ip:port : %s:%d -> ",
-                    ip_ip2str( iph->saddr, buf, sizeof( buf ) ), ntohs( tcph->source ) );
-            printf( "Translated source ip:port : %s:%d\n",
-                    ip_ip2str( publicNetAddr.s_addr, buf, sizeof( buf ) ), port );
+            io_debug( "Original source ip:port : %s:%d -> ",
+                      ip_ip2str( iph->saddr, buf, sizeof( buf ) ), ntohs( tcph->source ) );
+            io_debug( "Translated source ip:port : %s:%d\n",
+                      ip_ip2str( publicNetAddr.s_addr, buf, sizeof( buf ) ), port );
 
             iph->saddr   = publicNetAddr.s_addr;
             tcph->source = htons( port );
@@ -253,15 +320,15 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
         if ( port_ip_map.end() != ite  )
         {
             // (b)
-            printf( "inbound (b)\n" );
+            io_debug( "inbound (b)\n" );
             {
                 struct in_addr old_addr;
                 old_addr.s_addr = iph->daddr;
                 struct in_addr new_addr;
                 new_addr.s_addr = ite->second.addr;
-                printf( "Map destination ip:port : %s:%d -> %s:%d\n",
-                        inet_ntoa( old_addr ), ntohs( tcph->dest ),
-                        inet_ntoa( new_addr ), ntohs( ite->second.port ) );
+                io_debug( "Map destination ip:port : %s:%d -> %s:%d\n",
+                          inet_ntoa( old_addr ), ntohs( tcph->dest ),
+                          inet_ntoa( new_addr ), ntohs( ite->second.port ) );
             }
             port = ite->second.port;
             iph->daddr  = ite->second.addr;
@@ -273,7 +340,7 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
         {
             // (c)
             // drop
-            printf( "inbound (c) drop\n" );
+            io_debug( "inbound (c) drop\n" );
             return nfq_set_verdict( myQueue, id, NF_DROP, len, pktData );
         }
     }
@@ -284,26 +351,27 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
         if ( _fin_count > 2 )
         {
             printf( "error: fin count %u > 2\n", _fin_count );
+            exit( 1 );
         }
         if ( 1 == _fin_count )
         {
-            printf( "FIN_WAIT_1" );
+            io_debug( "FIN_WAIT_1" );
         }
         else if ( 2 == _fin_count )
         {
-            printf( "FIN_WAIT_2" );
+            io_debug( "FIN_WAIT_2" );
         }
     }
     else if ( 2 == _fin_count && 1 == tcph->ack )
     {
         // last ack, closed
-        printf( "LAST_ACK, take port %d back\n", port );
+        io_debug( "LAST_ACK, take port %d back\n", port );
         available_ports.insert( port );
         _fin_count = 0;
     }
     else if ( 1 == tcph->rst )
     {
-        printf( "RST, take port %d back\n", port );
+        io_debug( "RST, take port %d back\n", port );
         available_ports.insert( port );
         _fin_count = 0;
     }
@@ -356,56 +424,33 @@ void* pthread_prog( void* fd )
         while ( !packets.empty() && _comsume( mytokenbucket, 1 ) )
         {
             // send packet
-            printf( "bucket thread\n" );
+            io_debug( "bucket thread\n" );
             nfq_data* pkt = ( nfq_data* )packets.front().pktData;
 
             char buf[80];
             unsigned int id = packets.front().id;
-//            unsigned int id = 0;
-//            nfqnl_msg_packet_hdr* header;
-
-//            printf( "pkt recvd: " );
-//            if ( ( header = nfq_get_msg_packet_hdr( pkt ) ) )
-//            {
-//                id = ntohl( header->packet_id );
-            printf( "  id: %u\n", id );
-//                printf( "  hw_protocol: %u\n", ntohs( header->hw_protocol ) );
-//                printf( "  hook: %u\n", header->hook );
-//            }
-
-//            // print the timestamp (PC: seems the timestamp is not always set)
-//            struct timeval tv;
-//            if ( !nfq_get_timestamp( pkt, &tv ) )
-//            {
-//                printf( "  timestamp: %lu.%lu\n", tv.tv_sec, tv.tv_usec );
-//            }
-//            else
-//            {
-//                printf( "  timestamp: nil\n" );
-//            }
+            io_debug( "  id: %u\n", id );
 
             // Print the payload; in copy meta mode, only headers will be
             // included; in copy packet mode, whole packet will be returned.
-            printf( " payload: " );
-//            unsigned char* pktData;
-//            int len = nfq_get_payload( pkt, ( unsigned char** )&pktData );
+            io_debug( " payload: " );
             unsigned char* pktData = packets.front().pktData;
             int len = packets.front().len;
             if ( len > 0 )
             {
                 for ( int i = 0; i < len; ++i )
                 {
-                    printf( "%02x ", pktData[i] );
+                    io_debug( "%02x ", pktData[i] );
                 }
             }
-            printf( "\n" );
+            io_debug( "\n" );
 
             struct iphdr* iph = ( struct iphdr* ) pktData;
-            printf( "source      ip : %s\n", ip_ip2str( iph->saddr, buf, sizeof( buf ) ) );
-            printf( "destination ip : %s\n", ip_ip2str( iph->daddr, buf, sizeof( buf ) ) );
+            io_debug( "source      ip : %s\n", ip_ip2str( iph->saddr, buf, sizeof( buf ) ) );
+            io_debug( "destination ip : %s\n", ip_ip2str( iph->daddr, buf, sizeof( buf ) ) );
 
             // add a newline at the end
-            printf( "\n" );
+            io_debug( "\n" );
             if ( nfq_set_verdict( myQueue, id, NF_ACCEPT, len, pktData ) < 0 )
             {
                 printf( "error: nfq_set_Verdict() failed!\n" );
@@ -460,12 +505,6 @@ int main( int argc, char** argv )
     char buf[4096];
 
     printf( "Start nat\n" );
-    printf( "public ip %s %s\n",
-            argv[1],
-            ip_ip2str( publicNetAddr.s_addr, buf, sizeof( buf ) ) );
-    printf( "local  ip %s %s\n",
-            argv[2],
-            ip_ip2str( localNetAddr.s_addr, buf, sizeof( buf ) ) );
 
     // Get a queue connection handle from the module
     if ( !( nfqHandle = nfq_open() ) )
