@@ -46,6 +46,11 @@ void _io_debug( const char* format, ... )
 #endif
 }
 
+#define io_debug( format, ... )   \
+    { \
+        _io_debug( format, ##__VA_ARGS__); \
+    }
+
 static int mask_int = 0;
 static unsigned int local_mask = 0;
 
@@ -296,7 +301,12 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
         available_ports.insert( port );
         _fin_count = 0;
     }
-    // Reminder: need to work with RST
+    else if ( 1 == tcph->rst )
+    {
+        printf( "RST, take port %d back\n", port );
+        available_ports.insert( port );
+        _fin_count = 0;
+    }
 
 
     Packet p;
