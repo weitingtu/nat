@@ -20,6 +20,7 @@
 #include <map>
 #include <set>
 #include <vector>
+#include <list>
 #include <algorithm>
 #include <numeric>
 
@@ -48,6 +49,9 @@ void _io_debug( const char* format, ... )
 static int mask_int = 0;
 static unsigned int local_mask = 0;
 
+static int bucket_size = 2048;
+static int fill_rate   = 2048;
+
 static struct in_addr publicNetAddr;
 static struct in_addr localNetAddr;
 
@@ -73,6 +77,15 @@ struct IpPortCompare
 std::map<IpPort, u_int16_t, IpPortCompare> ip_port_map;
 std::map<u_int16_t, IpPort> port_ip_map;
 std::set<u_int16_t> available_ports;
+
+struct Packet
+{
+    unsigned int id;
+    unsigned char* pktData;
+    int len;
+};
+
+std::list<Packet> packets;
 
 /*
  * Callback function installed to netfilter queue
@@ -283,10 +296,116 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
         available_ports.insert( port );
         _fin_count = 0;
     }
+    // Reminder: need to work with RST
 
-    return nfq_set_verdict( myQueue, id, NF_ACCEPT, len, pktData );
+
+    Packet p;
+    p.id = id;
+    p.len = len;
+    p.pktData = ( unsigned char* )malloc( sizeof( unsigned char* )*len );
+    memcpy( p.pktData, pktData, len );
+    packets.push_back( p );
+
+//    return nfq_set_verdict( myQueue, id, NF_ACCEPT, len, pktData );
+    return 0;
 
     // end Callback
+}
+
+bool _comsume( size_t& token_bucket, size_t i )
+{
+    if ( token_bucket < i )
+    {
+        return false;
+    }
+
+    token_bucket -= i;
+
+    return true;
+}
+
+/*
+ * Worker thread performing receiving and outputing messages
+ */
+void* pthread_prog( void* fd )
+{
+    struct nfq_q_handle* myQueue = ( nfq_q_handle* ) fd;
+
+    struct timespec req, rem;
+    req.tv_sec = 0;
+    req.tv_nsec = ( 1.0 / ( double ) fill_rate ) * 1000000;
+    size_t mytokenbucket = 0;
+    while ( 1 )
+    {
+        if ( nanosleep( &req, &rem ) < 0 )
+        {
+            printf( "error: nanosleep() system call failed!\n" );
+            exit( 1 );
+        }
+        ++mytokenbucket;
+        while ( !packets.empty() && _comsume( mytokenbucket, 1 ) )
+        {
+            // send packet
+            printf( "bucket thread\n" );
+            nfq_data* pkt = ( nfq_data* )packets.front().pktData;
+
+            char buf[80];
+            unsigned int id = packets.front().id;
+//            unsigned int id = 0;
+//            nfqnl_msg_packet_hdr* header;
+
+//            printf( "pkt recvd: " );
+//            if ( ( header = nfq_get_msg_packet_hdr( pkt ) ) )
+//            {
+//                id = ntohl( header->packet_id );
+            printf( "  id: %u\n", id );
+//                printf( "  hw_protocol: %u\n", ntohs( header->hw_protocol ) );
+//                printf( "  hook: %u\n", header->hook );
+//            }
+
+//            // print the timestamp (PC: seems the timestamp is not always set)
+//            struct timeval tv;
+//            if ( !nfq_get_timestamp( pkt, &tv ) )
+//            {
+//                printf( "  timestamp: %lu.%lu\n", tv.tv_sec, tv.tv_usec );
+//            }
+//            else
+//            {
+//                printf( "  timestamp: nil\n" );
+//            }
+
+            // Print the payload; in copy meta mode, only headers will be
+            // included; in copy packet mode, whole packet will be returned.
+            printf( " payload: " );
+//            unsigned char* pktData;
+//            int len = nfq_get_payload( pkt, ( unsigned char** )&pktData );
+            unsigned char* pktData = packets.front().pktData;
+            int len = packets.front().len;
+            if ( len > 0 )
+            {
+                for ( int i = 0; i < len; ++i )
+                {
+                    printf( "%02x ", pktData[i] );
+                }
+            }
+            printf( "\n" );
+
+            struct iphdr* iph = ( struct iphdr* ) pktData;
+            printf( "source      ip : %s\n", ip_ip2str( iph->saddr, buf, sizeof( buf ) ) );
+            printf( "destination ip : %s\n", ip_ip2str( iph->daddr, buf, sizeof( buf ) ) );
+
+            // add a newline at the end
+            printf( "\n" );
+            if ( nfq_set_verdict( myQueue, id, NF_ACCEPT, len, pktData ) < 0 )
+            {
+                printf( "error: nfq_set_Verdict() failed!\n" );
+                exit( 1 );
+            }
+
+            free( pkt );
+            packets.pop_front();
+        }
+    }
 }
 
 /*
@@ -311,12 +430,16 @@ int main( int argc, char** argv )
     publicNetAddr.s_addr = inet_addr( argv[1] );
     localNetAddr.s_addr = inet_addr( argv[2] );
 
+    bucket_size = atoi( argv[4] );
+    fill_rate   = atoi( argv[5] );
+
     ip_port_map.clear();
     port_ip_map.clear();
 
     std::vector<u_int16_t> ports( 12000 - 10000 + 1 );
     std::iota( ports.begin(), ports.end(), 10000 );
     available_ports = std::set<u_int16_t>( ports.begin(), ports.end() );
+    packets.clear();
 
     struct nfq_handle* nfqHandle;
 
@@ -369,6 +492,9 @@ int main( int argc, char** argv )
         fprintf( stderr, "Could not set packet copy mode\n" );
         exit( 1 );
     }
+
+    pthread_t worker;
+    pthread_create( &worker, NULL, pthread_prog, myQueue );
 
     netlinkHandle = nfq_nfnlh( nfqHandle );
     fd = nfnl_fd( netlinkHandle );
