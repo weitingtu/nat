@@ -14,6 +14,7 @@
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
+#include <pthread.h>
 #include "checksum.h"
 #include "net_print.h"
 #include <map>
@@ -26,6 +27,22 @@ extern "C"
 {
 #include <linux/netfilter.h>     /* Defines verdicts (NF_ACCEPT, etc) */
 #include <libnetfilter_queue/libnetfilter_queue.h>
+}
+
+pthread_mutex_t debug_lock = PTHREAD_MUTEX_INITIALIZER;
+
+void _io_debug( const char* format, ... ) __attribute__( ( format( printf, 1, 2 ) ) );
+void _io_debug( const char* format, ... )
+{
+#ifdef DEBUG
+    pthread_mutex_lock( &debug_lock );
+    printf( "<debug> " );
+    va_list args;
+    va_start( args, format );
+    vprintf( format, args );
+    va_end( args );
+    pthread_mutex_unlock( &debug_lock );
+#endif
 }
 
 static int mask_int = 0;
@@ -201,7 +218,6 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
             iph->check   = ip_checksum( pktData );
             tcph->check  = tcp_checksum( pktData );
         }
-
     }
     else
     {
@@ -234,8 +250,6 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
             tcph->dest  = ite->second.port;
             iph->check  = ip_checksum( pktData );
             tcph->check = tcp_checksum( pktData );
-
-//            return nfq_set_verdict( myQueue, id, NF_ACCEPT, len, pktData );
         }
         else
         {
