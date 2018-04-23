@@ -63,6 +63,7 @@ std::set<u_int16_t> available_ports;
 static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
                      nfq_data* pkt, void* cbData )
 {
+    static unsigned int _fin_count = 0;
     char buf[80];
     unsigned int id = 0;
     nfqnl_msg_packet_hdr* header;
@@ -121,6 +122,8 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
     PrintTcp( tcph, stdout );
     fprintf( stdout, "----------------------------------------\n" );
 
+    u_int16_t port = 0;
+
     if ( ( ntohl( iph->saddr ) & local_mask ) == ( ntohl( localNetAddr.s_addr ) & local_mask ) )
     {
         // outbound
@@ -141,7 +144,6 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
         ip_port.port = tcph->source; /* source port */
 
         std::map<IpPort, u_int16_t>::iterator ite = ip_port_map.find( ip_port );
-        u_int16_t port = 0;
 
         if ( ip_port_map.end() == ite && 1 == tcph->syn )
         {
@@ -155,7 +157,9 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
             {
                 port = *( available_ports.begin() );
                 available_ports.erase( available_ports.begin() );
-                printf( "A new nat entry is added\n" );
+
+                printf( "A new nat entry is added. ip:port %s:%d -> port %d\n", ip_ip2str( ip_port.addr, buf, sizeof( buf ) ), ip_port.port, port );
+
                 ip_port_map.insert( std::make_pair( ip_port, port ) );
                 port_ip_map.insert( std::make_pair( port, ip_port ) );
             }
@@ -187,23 +191,15 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
         }
         else
         {
-            {
-                printf( "Original source ip:port : %s:%d -> ",
-                        ip_ip2str( iph->saddr, buf, sizeof( buf ) ), ntohs( tcph->source ) );
-                printf( "Translated source ip:port : %s:%d\n",
-                        ip_ip2str( publicNetAddr.s_addr, buf, sizeof( buf ) ), port );
-            }
+            printf( "Original source ip:port : %s:%d -> ",
+                    ip_ip2str( iph->saddr, buf, sizeof( buf ) ), ntohs( tcph->source ) );
+            printf( "Translated source ip:port : %s:%d\n",
+                    ip_ip2str( publicNetAddr.s_addr, buf, sizeof( buf ) ), port );
 
-            printf( "IP Checksum : %x %x\n", iph->check, ip_checksum( pktData ) );
-            printf( "TCP Checksum: %x %x\n", tcph->check, tcp_checksum( pktData ) );
             iph->saddr   = publicNetAddr.s_addr;
             tcph->source = htons( port );
             iph->check   = ip_checksum( pktData );
             tcph->check  = tcp_checksum( pktData );
-            printf( "IP Checksum : %x %x\n", iph->check, ip_checksum( pktData ) );
-            printf( "TCP Checksum: %x %x\n", tcph->check, tcp_checksum( pktData ) );
-
-            return nfq_set_verdict( myQueue, id, NF_ACCEPT, len, pktData );
         }
 
     }
@@ -229,14 +225,17 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
                 old_addr.s_addr = iph->daddr;
                 struct in_addr new_addr;
                 new_addr.s_addr = ite->second.addr;
-                printf( "Map destination ip:port : %s:%d -> %s:%d\n", inet_ntoa( old_addr ), tcph->dest, inet_ntoa( new_addr ), ite->second.port );
+                printf( "Map destination ip:port : %s:%d -> %s:%d\n",
+                        inet_ntoa( old_addr ), ntohs( tcph->dest ),
+                        inet_ntoa( new_addr ), ntohs( ite->second.port ) );
             }
+            port = ite->second.port;
             iph->daddr  = ite->second.addr;
             tcph->dest  = ite->second.port;
             iph->check  = ip_checksum( pktData );
             tcph->check = tcp_checksum( pktData );
 
-            return nfq_set_verdict( myQueue, id, NF_ACCEPT, len, pktData );
+//            return nfq_set_verdict( myQueue, id, NF_ACCEPT, len, pktData );
         }
         else
         {
@@ -247,7 +246,30 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
         }
     }
 
-    // For this program we'll always accept the packet...
+    if ( 1 == tcph->fin )
+    {
+        _fin_count++;
+        if ( _fin_count > 2 )
+        {
+            printf( "error: fin count %u > 2\n", _fin_count );
+        }
+        if ( 1 == _fin_count )
+        {
+            printf( "FIN_WAIT_1" );
+        }
+        else if ( 2 == _fin_count )
+        {
+            printf( "FIN_WAIT_2" );
+        }
+    }
+    else if ( 2 == _fin_count && 1 == tcph->ack )
+    {
+        // last ack, closed
+        printf( "LAST_ACK, take port %d back\n", port );
+        available_ports.insert( port );
+        _fin_count = 0;
+    }
+
     return nfq_set_verdict( myQueue, id, NF_ACCEPT, len, pktData );
 
     // end Callback
