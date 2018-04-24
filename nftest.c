@@ -23,6 +23,7 @@
 #include <list>
 #include <algorithm>
 #include <numeric>
+#include <stdarg.h>
 
 extern "C"
 {
@@ -196,7 +197,9 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
     {
         for ( int i = 0; i < len; ++i )
         {
-            io_debug( "%02x ", pktData[i] );
+#ifdef DEBUG
+            printf( "%02x ", pktData[i] );
+#endif
         }
     }
     io_debug( "\n" );
@@ -440,7 +443,9 @@ void* pthread_prog( void* fd )
             {
                 for ( int i = 0; i < len; ++i )
                 {
-                    io_debug( "%02x ", pktData[i] );
+#ifdef DEBUG
+                    printf( "%02x ", pktData[i] );
+#endif
                 }
             }
             io_debug( "\n" );
