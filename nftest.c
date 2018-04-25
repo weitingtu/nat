@@ -32,6 +32,7 @@ extern "C"
 }
 
 pthread_mutex_t debug_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t buffer_lock = PTHREAD_MUTEX_INITIALIZER;
 
 void _io_debug( const char* format, ... ) __attribute__( ( format( printf, 1, 2 ) ) );
 void _io_debug( const char* format, ... )
@@ -91,7 +92,7 @@ struct Packet
     int len;
 };
 
-std::list<Packet> packets;
+std::list<Packet> buffer;
 
 int PrintPkt( unsigned int id, struct iphdr* iphdr, struct tcphdr* tcphdr )
 {
@@ -225,6 +226,15 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
 //    PrintIpHeader( iph, NULL, 0, stdout );
 //    PrintTcp( tcph, stdout );
 //    fprintf( stdout, "----------------------------------------\n" );
+
+    pthread_mutex_lock( &buffer_lock );
+    size_t buffer_size = buffer.size();
+    pthread_mutex_unlock( &buffer_lock );
+    if ( buffer_size >= 10 )
+    {
+        printf( "Buffer full (size is %zu). Drop packet\n", buffer_size );
+        return nfq_set_verdict( myQueue, id, NF_DROP, len, pktData );
+    }
 
     u_int16_t port = 0;
 
@@ -401,9 +411,10 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
     p.len = len;
     p.pktData = ( unsigned char* )malloc( sizeof( unsigned char* )*len );
     memcpy( p.pktData, pktData, len );
-    packets.push_back( p );
+    pthread_mutex_lock( &buffer_lock );
+    buffer.push_back( p );
+    pthread_mutex_unlock( &buffer_lock );
 
-//    return nfq_set_verdict( myQueue, id, NF_ACCEPT, len, pktData );
     return 0;
 
     // end Callback
@@ -440,21 +451,29 @@ void* pthread_prog( void* fd )
             exit( 1 );
         }
         ++mytokenbucket;
-        while ( !packets.empty() && _comsume( mytokenbucket, 1 ) )
+        pthread_mutex_lock( &buffer_lock );
+        bool empty = buffer.empty();
+        Packet packet;
+        if ( !empty )
+        {
+            packet = buffer.front();
+            buffer.pop_front();
+        }
+        pthread_mutex_unlock( &buffer_lock );
+        while ( !empty && _comsume( mytokenbucket, 1 ) )
         {
             // send packet
             io_debug( "bucket thread\n" );
-            nfq_data* pkt = ( nfq_data* )packets.front().pktData;
 
             char buf[80];
-            unsigned int id = packets.front().id;
+            unsigned int id = packet.id;
             io_debug( "  id: %u\n", id );
 
             // Print the payload; in copy meta mode, only headers will be
             // included; in copy packet mode, whole packet will be returned.
             io_debug( " payload: " );
-            unsigned char* pktData = packets.front().pktData;
-            int len = packets.front().len;
+            unsigned char* pktData = packet.pktData;
+            int len = packet.len;
             if ( len > 0 )
             {
                 for ( int i = 0; i < len; ++i )
@@ -478,8 +497,15 @@ void* pthread_prog( void* fd )
                 exit( 1 );
             }
 
-            free( pkt );
-            packets.pop_front();
+            free( packet.pktData );
+            pthread_mutex_lock( &buffer_lock );
+            empty = buffer.empty();
+            if ( !empty )
+            {
+                packet = buffer.front();
+                buffer.pop_front();
+            }
+            pthread_mutex_unlock( &buffer_lock );
         }
     }
 }
@@ -515,7 +541,7 @@ int main( int argc, char** argv )
     std::vector<u_int16_t> ports( 12000 - 10000 + 1 );
     std::iota( ports.begin(), ports.end(), 10000 );
     available_ports = std::set<u_int16_t>( ports.begin(), ports.end() );
-    packets.clear();
+    buffer.clear();
 
     struct nfq_handle* nfqHandle;
 
