@@ -369,13 +369,29 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
     {
         // last ack, closed
         io_debug( "LAST_ACK, take port %d back\n", port );
+
+        IpPort ip_port;
+        ip_port.addr = iph->saddr;
+        ip_port.port = tcph->source; /* source port */
+        ip_port_map.erase( ip_port );
+        port_ip_map.erase( port );
+
         available_ports.insert( port );
+
         _fin_count = 0;
     }
     else if ( 1 == tcph->rst )
     {
         io_debug( "RST, take port %d back\n", port );
+
+        IpPort ip_port;
+        ip_port.addr = iph->saddr;
+        ip_port.port = tcph->source; /* source port */
+        ip_port_map.erase( ip_port );
+        port_ip_map.erase( port );
+
         available_ports.insert( port );
+
         _fin_count = 0;
     }
 
