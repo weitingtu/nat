@@ -221,7 +221,9 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
 
     struct tcphdr* tcph = ( struct tcphdr* )( ( ( char* ) iph ) + ( iph->ihl << 2 ) );
 
+#ifdef DEBUG
     PrintPkt( id, iph, tcph );
+#endif
 
 //    PrintIpHeader( iph, NULL, 0, stdout );
 //    PrintTcp( tcph, stdout );
@@ -273,7 +275,8 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
                 port = *( available_ports.begin() );
                 available_ports.erase( available_ports.begin() );
 
-                printf( "A new nat entry is added. ip:port %s:%d -> port %d\n", ip_ip2str( ip_port.addr, buf, sizeof( buf ) ), ip_port.port, port );
+                printf( "A new nat entry is added. %s:%d -> ", ip_ip2str( ip_port.addr, buf, sizeof( buf ) ), ip_port.port );
+                printf( "%s:%d\n", ip_ip2str( publicNetAddr.s_addr, buf, sizeof( buf ) ), port );
 
                 ip_port_map.insert( std::make_pair( ip_port, port ) );
                 port_ip_map.insert( std::make_pair( port, ip_port ) );
@@ -389,6 +392,9 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
         available_ports.insert( port );
 
         _fin_count = 0;
+
+        printf( "A existing nat entry is deleted. %s:%d -> ", ip_ip2str( ip_port.addr, buf, sizeof( buf ) ), ip_port.port );
+        printf( "%s:%d\n", ip_ip2str( publicNetAddr.s_addr, buf, sizeof( buf ) ), port );
     }
     else if ( 1 == tcph->rst )
     {
@@ -403,8 +409,10 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
         available_ports.insert( port );
 
         _fin_count = 0;
-    }
 
+        printf( "A existing nat entry is deleted. %s:%d -> ", ip_ip2str( ip_port.addr, buf, sizeof( buf ) ), ip_port.port );
+        printf( "%s:%d\n", ip_ip2str( publicNetAddr.s_addr, buf, sizeof( buf ) ), port );
+    }
 
     Packet p;
     p.id = id;
