@@ -234,7 +234,7 @@ static int Callback( nfq_q_handle* myQueue, struct nfgenmsg* msg,
     pthread_mutex_unlock( &buffer_lock );
     if ( buffer_size >= 10 )
     {
-        printf( "Buffer full (size is %zu). Drop packet\n", buffer_size );
+        io_debug( "Buffer full (size is %zu). Drop packet\n", buffer_size );
         return nfq_set_verdict( myQueue, id, NF_DROP, len, pktData );
     }
 
@@ -450,7 +450,7 @@ void* pthread_prog( void* fd )
     struct timespec req, rem;
     req.tv_sec = 0;
     req.tv_nsec = ( 1.0 / ( double ) fill_rate ) * 1000000;
-    size_t mytokenbucket = 0;
+    size_t mytokenbucket = bucket_size;
     while ( 1 )
     {
         if ( nanosleep( &req, &rem ) < 0 )
@@ -458,7 +458,10 @@ void* pthread_prog( void* fd )
             printf( "error: nanosleep() system call failed!\n" );
             exit( 1 );
         }
-        ++mytokenbucket;
+        if ( mytokenbucket <= bucket_size )
+        {
+            ++mytokenbucket;
+        }
         pthread_mutex_lock( &buffer_lock );
         bool empty = buffer.empty();
         Packet packet;
